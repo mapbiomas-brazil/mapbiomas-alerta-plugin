@@ -1,0 +1,1 @@
+# mapbiomas-alerta-plugin
