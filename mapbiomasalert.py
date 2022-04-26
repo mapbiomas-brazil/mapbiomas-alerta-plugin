@@ -44,7 +44,7 @@ from qgis.core import (
     Qgis, QgsApplication, QgsProject,
     QgsCoordinateReferenceSystem, QgsCoordinateTransform,
     QgsVectorLayer, QgsFeature,
-    QgsBlockingNetworkRequest,
+    QgsBlockingNetworkRequest,QgsTask
 )
 from qgis.gui import QgsGui, QgsMessageBar, QgsLayerTreeEmbeddedWidgetProvider
 from qgis import utils as QgsUtils
@@ -54,7 +54,9 @@ from .form import setForm as FORM_setForm
 
 
 class MapBiomasAlertWidget(QWidget):
+
     def __init__(self, layer, layerTerritory):
+        
         def getIcons():
             fIcon = self.style().standardIcon
             return {
@@ -142,6 +144,9 @@ class MapBiomasAlertWidget(QWidget):
             self.numDays.valueChanged.connect( changedNumDay )
 
         super().__init__()
+        self.canvas =  QgsUtils.iface.mapCanvas()
+        self.project = QgsProject.instance()
+        self.crsCatalog = QgsCoordinateReferenceSystem('EPSG:4674')
         self.msgBar = QgsUtils.iface.messageBar()
         self.alert = DbAlerts( layer )
         self.api = API_MapbiomasAlert()
@@ -162,12 +167,95 @@ class MapBiomasAlertWidget(QWidget):
             self.search.setIcon( self.icons['apply'] )
             return
         self.search.setIcon( self.icons['cancel'] )
+        def getWktExtent():
+            crsCanvas = self.canvas.mapSettings().destinationCrs()
+            ct = QgsCoordinateTransform( crsCanvas, self.crsCatalog, self.project )
+            extent = self.canvas.extent() if crsCanvas == self.crsCatalog else ct.transform( self.canvas.extent() )
+            return extent.asWktPolygon()
+
+        def populate(features):
+            provider = self.alert.dataProvider()
+            for item in features:
+                atts = [ item[k] for k in self.apiMB.fields ]
+                feat = QgsFeature()
+                feat.setAttributes( atts )
+                geom = item['geometry']
+                if not geom is None:
+                    feat.setGeometry( geom )
+                provider.addFeature( feat )
+                del item
+                
+        def finished(response):
+            self.response = response
+            if not response['isOk']:
+                self.message.emit( Qgis.Critical, response['message'])
+                return
+            if len( self.response['features'] ) == 0:
+                self.message.emit( Qgis.Warning, "Inside this view don't have alerts")
+                del response['features']
+                return
+            populate( response['features'] )
+            del response['features']
+            self.message.emit( Qgis.Success, 'Finished OK')
         fromDate = self.fromDate.date().toString( Qt.ISODate )
         toDate = self.toDate.date().toString( Qt.ISODate )
         self.alert.setLayer( fromDate, toDate )
         ids = self.layerTerritory.getIdsCanvas()
         self.status.setText('Fetch alert from map extent and dates')
-        self.api.getAlerts( self.alert, fromDate, toDate, ids )
+        step = 10000
+        #url = self.api.getUrlAlertsPaginated(getWktExtent(),step,0)
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsbyCQL(getWktExtent(),'alert_code < 10000')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsbyCQL(getWktExtent(),'alert_code between 10000 and 50000')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsbyCQL(getWktExtent(),'alert_code between 50000 and 200000')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsbyCQL(getWktExtent(),'alert_code > 200000')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsBySource(getWktExtent(),'SAD')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsBySource(getWktExtent(),'DETERB-AMAZONIA')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsBySource(getWktExtent(),'DETERB-CERRADO')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        #url = self.api.getUrlAlertsBySource(getWktExtent(),'GLAD')
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+
+        #url = self.api.getUrlAlertsZero(getWktExtent())
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+
+        #url = self.api.getUrlAlerts(getWktExtent())
+        #self.api.getAlertsWFS(url, self.alert,fromDate, toDate,ids)
+        self.getAlertsThread(self.alert,step,fromDate, toDate,ids)
+
+        #for i in range(1,int(200000/step)):
+        #    url = self.api.getUrlAlertsPaginated(getWktExtent(),step,i,fromDate,toDate)
+        #    self.api.getAlertsWFSnonThread(url, self.alert,fromDate, toDate,ids)
+        #self.api.getAlerts( self.alert, fromDate, toDate, ids )
+    def getAlertsThread(self,dbAlerts,step,fromDate,toDate,ids):
+        def run(task):
+            def getWktExtent():
+                crsCanvas = self.canvas.mapSettings().destinationCrs()
+                ct = QgsCoordinateTransform( crsCanvas, self.crsCatalog, self.project )
+                extent = self.canvas.extent() if crsCanvas == self.crsCatalog else ct.transform( self.canvas.extent() )
+                return extent.asWktPolygon()
+            print('inside getAlerts thread')
+            print('step='+str(step))
+            for i in range(1,int(200000/step)):
+                url = self.api.getUrlAlertsPaginated(getWktExtent(),step,i,fromDate,toDate)
+                self.api.getAlertsWFSnonThread(url, self.alert,fromDate, toDate,ids)
+
+        def finished(exception, dataResult=None):
+            #self.finishedAlert()
+            self.taskAlerts = None
+            msg = f"Finished {dataResult['total']} alerts" if dataResult else ''
+            #self.status.setText( msg )
+        print('Creating Task')
+        task = QgsTask.fromFunction('Alert Task', run, on_finished=finished )
+        task.setDependentLayers( [ dbAlerts.layer ] )
+        self.taskAlerts = task
+        QgsApplication.taskManager().addTask( task )
 
     @pyqtSlot()
     def finishedAlert(self):
@@ -201,6 +289,7 @@ class MapBiomasAlert(QObject):
         self.msgBar = iface.messageBar()
         self.widgetProvider = None
         self.layer = None
+        self.canvas = iface.mapCanvas()
         self.styleFile = os.path.join( os.path.dirname( __file__ ), 'mapbiomas_alert.qml' )
 
     def register(self):
@@ -221,8 +310,46 @@ class MapBiomasAlert(QObject):
 
     def run(self):
         api = API_MapbiomasAlert()
-        # api.setToken('luiz.motta@ibama.gov.br', 'Lmotta@21')
+        api.setToken('pc01solved@gmail.com', 'Solved123@')
         # NEED register(call out)
         layer = DbAlerts.createLayer()
         self.addLayerRegisterProperty( layer )
         
+    def actionsForm(self, nameAction, feature_id=None):
+        """
+        Run action defined in layer, provide by style file
+        :param nameAction: Name of action
+        :params feature_id: Feature ID
+        """
+        # Actions functions
+        def flash(feature_id):
+            geom = self.alert.getFeature( feature_id ).geometry()
+            self.mapCanvasGeom.flash( [ geom ], self.alert )
+            return { 'isOk': True }
+
+        def zoom(feature_id):
+            geom = self.alert.getFeature( feature_id ).geometry()
+            self.mapCanvasGeom.zoom( [ geom ], self.alert )
+            return { 'isOk': True }
+
+        def report(feature_id):
+            feat =  self.alert.getFeature( feature_id )
+            alerta_id = feat['alerta_id']
+            cars_ids = feat['cars']
+            if len(cars_ids) == 0:
+                url = "{}/{}".format( API_MapbiomasAlert.urlReport, alerta_id )
+                QDesktopServices.openUrl( QUrl( url ) )
+            else:
+                for car_id in cars_ids.split('\n'):
+                    url = "{}/{}/car/{}".format( API_MapbiomasAlert.urlReport, alerta_id, car_id )
+                    QDesktopServices.openUrl( QUrl( url ) )
+            return { 'isOk': True }
+
+        actionsFunc = {
+            'flash':  flash,
+            'zoom':   zoom,
+            'report': report
+        }
+        if not nameAction in actionsFunc.keys():
+            return { 'isOk': False, 'message': "Missing action '{}'".format( nameAction ) }
+        return actionsFunc[ nameAction ]( feature_id )

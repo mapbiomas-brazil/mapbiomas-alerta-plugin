@@ -19,9 +19,9 @@ email                : motta.luiz@gmail.com
  ***************************************************************************/
 """
 
-__author__ = 'Luiz Motta'
+__author__ = 'Luiz Motta, Luiz Cortinhas'
 __date__ = '2019-04-19'
-__copyright__ = '(C) 2019, Luiz Motta'
+__copyright__ = '(C) 2019, Luiz Motta, (C) 2022, Luiz Cortinhas'
 __revision__ = '$Format:%H$'
 
 

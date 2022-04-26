@@ -3,11 +3,11 @@ name:MapBiomas Alert
 description:This plugin lets you get alert from MapBiomas Project(http://alerta.mapbiomas.org/).
 about:This plugin lets you get alert from MapBiomas Project(http://alerta.mapbiomas.org/).
 
-version:1.2
+version:1.2.1
 qgisMinimumVersion:3.10
 
-author:Luiz Motta
-email:motta.luiz@gmail.com
+author:Luiz Motta, Luiz Cortinhas
+email:motta.luiz@gmail.com, luiz.cortinhas@solved.eco.br
 
 category:Plugin
 

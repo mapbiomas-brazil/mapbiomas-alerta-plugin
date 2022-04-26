@@ -41,7 +41,7 @@
       </size>
      </property>
      <property name="currentIndex">
-      <number>0</number>
+      <number>1</number>
      </property>
      <widget class="QWidget" name="tabItem">
       <attribute name="title">
@@ -80,6 +80,16 @@
           <bool>true</bool>
          </property>
         </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label">
+         <property name="text">
+          <string>Double-click on the CAR id to view its Report</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QListView" name="leCarList"/>
        </item>
        <item>
         <spacer name="verticalSpacer_2">

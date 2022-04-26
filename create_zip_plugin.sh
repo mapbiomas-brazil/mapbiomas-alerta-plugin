@@ -7,6 +7,7 @@ mkdir "./$plugin_dir"
 cp *.py "./$plugin_dir"
 cp *.png "./$plugin_dir"
 cp *.qml "./$plugin_dir"
+cp *.ui "./$plugin_dir"
 for item in metadata.txt LICENSE territory_bbox.csv; do cp "./$item" "./$plugin_dir"; done
 zip -r $plugin_dir $plugin_dir
 rm -r $plugin_dir

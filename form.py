@@ -22,13 +22,14 @@ Updated: 2020-11-24
 """
 import os
 
-from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QLabel, QLineEdit
-from qgis.PyQt.QtGui import QPixmap
+from qgis.PyQt.QtCore import Qt,QUrl
+from qgis.PyQt.QtWidgets import QLabel, QLineEdit,QListView,QPushButton
+from qgis.PyQt.QtGui import QPixmap,QStandardItemModel,QStandardItem,QDesktopServices
 
 from qgis.core import Qgis, QgsEditFormConfig
 
 import qgis.utils as QgsUtils
+
 
 
 def getApi(pluginName):
@@ -38,8 +39,12 @@ def getApi(pluginName):
     :params pluginName: Name of plugin
     """
     plugins = {}
+    print('Searched Plugin:')
+    print(pluginName)
     for name, obj in QgsUtils.plugins.items():
         plugins[ name ] = obj
+        print('Plugin:')
+        print(plugins)
     if not pluginName in plugins:
         return { 'isOk': False, 'message': f"Missing {pluginName} Plugin." }
     return { 'isOk': True, 'api': plugins[ pluginName ].api }
@@ -118,17 +123,32 @@ def populateForm(dialog, feature):
     widgets['leSource'].setText( msg )
     widgets['leSource'].setCursorPosition(0)
     # . CAR
-    values = feature['carCode']
-    c_values = 0 if len( values ) == 0 else len( values.split(',') )
+    values = feature['carCode'].split(',')
+    values_id = feature['carId'].split(',')
+    #print('FEATURE:')
+    #print(feature['carCode'])
+    #print(feature['carId'])
+    c_values = 0 if len( values ) == 0 else len( values)
     msg = f"CARs({c_values}): {values}"
-    widgets['leCar'].setText( msg )
+    widgets['leCar'].setText( msg ),
+    
+    model = QStandardItemModel()
+    widgets['leCarList'].setModel(model)
+    widgets['leCarList'].disconnect()
+    widgets['leCarList'].doubleClicked.connect(ClicktoReport)
+    if (feature['carCode'] != None and feature['carCode'] != ''):
+        for i in range(0,len(values_id)):
+            item = QStandardItem(str(feature['alertCode'])+' - '+str(values_id[i])+' - '+str(values[i]))
+            item.setEditable(False)
+            #item.setCheckable(True)
+            model.appendRow(item)
+    
     widgets['leCar'].setCursorPosition(0)
-
     # tabImages
     # . Populate by API
     global api
     if api is None:
-        r = getApi('mapbiomasalert')
+        r = getApi('PLUGIN') 
         if not r['isOk']:
             message( r['message'], Qgis.Critical )
             return 
@@ -143,6 +163,18 @@ def populateForm(dialog, feature):
     f_alertCode = c_alertCode
     api.getImages( f_alertCode )
 
+def ClicktoReport(index):
+    print('Clicked')
+    #print(index)
+    print(index.row())
+    car = int(index.data().split(' - ')[1])
+    alerta = int(index.data().split(' - ')[0])
+    print(alerta)
+    print(car)
+    url = "https://plataforma.alerta.mapbiomas.org/laudo/{}/car/{}".format( alerta, car )
+    QDesktopServices.openUrl( QUrl( url ) )
+
+
 def loadForm(dialog, layer, feature):
     if feature.fieldNameIndex('alertCode') == -1:
         return
@@ -152,6 +184,8 @@ def loadForm(dialog, layer, feature):
             'leAlert': dialog.findChild( QLineEdit, 'leAlert' ),
             'leSource': dialog.findChild( QLineEdit, 'leSource' ),
             'leCar': dialog.findChild( QLineEdit, 'leCar' ),
+            'leCarList': dialog.findChild( QListView, 'leCarList' ),
+            'leGo2Report': dialog.findChild( QPushButton, 'leGo2Report' ),
             'lblMessage': dialog.findChild( QLabel, 'lblMessage' ),
             'leBefore': dialog.findChild( QLineEdit, 'leBefore' ),
             'lblImageBefore': dialog.findChild( QLabel, 'lblImageBefore' ),

@@ -19,9 +19,11 @@ email                : motta.luiz@gmail.com
  *                                                                         *
  ***************************************************************************/
 """
+from ast import Raise
+import urllib.parse
 
 import json, binascii, os, csv
-
+from .accesssite import AccessSite
 from qgis.PyQt.QtCore import (
     QObject, QUrl,
     pyqtSlot, pyqtSignal
@@ -35,7 +37,7 @@ from qgis.core import (
     QgsFeatureRequest,
     QgsCoordinateReferenceSystem, QgsCoordinateTransform,
     QgsBlockingNetworkRequest,
-    QgsTask
+    QgsTask,QgsVectorLayer, QgsDataSourceUri
 )
 from qgis import utils as QgsUtils
 
@@ -74,11 +76,28 @@ class Geometry_WKB():
 
 
 class API_MapbiomasAlert(QObject):
+
+    urlGeoserver = 'https://geoserver.ecostage.com.br/geoserver/mapbiomas-alerta/wfs' #'https://geoserver.ecostage.com.br/geoserver/ows'
+    urlReport = 'http://plataforma.alerta.mapbiomas.org/reports'
+    access = AccessSite()
+    fields = {
+            'alert_code': {'definition': 'int(-1)'},
+            'detected_at':  {'definition': 'string(10)'},
+            'source': {'definition': 'string(100)'},
+            #'dt_antes': {'definition': 'string(10)'},
+            #'img_antes': {'definition': 'string(150)'},
+            #'dt_depois': {'definition': 'string(10)'},
+            #'img_depois': {'definition': 'string(150)'},
+            'cars': {'definition': 'string(150)'},
+            #'cars_qtd': {'definition': 'int(-1)'},
+            'area_ha': {'definition': 'double'}
+            }
+
     Q_TOKEN = """
     {
         "query": "mutation($email: String!, $password: String!)
             { 
-                    createToken(email: $email, password: $password) { token }
+                    signIn(email: $email, password: $password) { token }
             }",
         "variables": {
             "email": "_email_",
@@ -100,7 +119,7 @@ class API_MapbiomasAlert(QObject):
         $offset: Int
         )
         {
-        allPublishedAlerts 
+        publishedAlerts 
         (
             startDetectedAt: $startDetectedAt
             endDetectedAt: $endDetectedAt
@@ -114,7 +133,10 @@ class API_MapbiomasAlert(QObject):
         }",
         "variables": {
             "limit": _limit_, "offset": _offset_ ,
-            "startDetectedAt": "_startDetectedAt_", "endDetectedAt": "_endDetectedAt_",
+            "startDetectedAt": "_startDetectedAt_", 
+            "endDetectedAt": "_endDetectedAt_",
+            "startPublishedAt": "_startDetectedAt_",
+            "endPublishedAt": "_endDetectedAt_",
             "territoryIds": [ _territoryIds_ ]
         }
     }
@@ -123,17 +145,18 @@ class API_MapbiomasAlert(QObject):
     {
         "query": "
         query(
-            $alertId: Int!
+            $alertCode: Int!
         )
         {
-        alertReport( alertId: $alertId )
+        alertReport(alertCode: $alertCode )
         { images { before { url, satellite, acquiredAt } after  { url, satellite, acquiredAt } } }
         }",
-        "variables": { "alertId": _alertId_ }
+        "variables": { "alertCode": _alertId_ }
     }
     """
     LIMIT = 50
-    NETWORKREQUEST = QNetworkRequest(  QUrl('https://plataforma.alerta.mapbiomas.org/api/graphql') )
+    OFFSETID = 0;
+    NETWORKREQUEST = QNetworkRequest(  QUrl('https://plataforma.alerta.mapbiomas.org/api/v1/graphql') )
     message = pyqtSignal(str, Qgis.MessageLevel)
     status = pyqtSignal(str)
     alerts = pyqtSignal(list)
@@ -146,6 +169,8 @@ class API_MapbiomasAlert(QObject):
         self.request = QgsBlockingNetworkRequest()
         API_MapbiomasAlert.NETWORKREQUEST.setHeader( QNetworkRequest.ContentTypeHeader, 'application/json')
         self.tokenOk = False
+        
+        
 
     def _request(self, data):
         data = data.replace('\n', '').encode('utf-8')
@@ -165,25 +190,213 @@ class API_MapbiomasAlert(QObject):
     def setToken(self, email, password, sendMessage=False):
         values = { 'email': email, 'password': password }
         data = self._replaceQuery( values, self.Q_TOKEN )
+        #print(data)
         response = self._request( data )
         if not response:
             self.message.emit( self.request.errorMessage(), Qgis.Critical )
             self.tokenOk = False
             return
-        if not response['data']['createToken']:
+        if not response['data']['signIn']:
             if sendMessage:
                 self.message.emit( 'Invalid email or password', Qgis.Critical )
             self.tokenOk = False
             return
-        token = response['data']['createToken']['token']
+        token = response['data']['signIn']['token']
         value = f"Bearer {token}"
         API_MapbiomasAlert.NETWORKREQUEST.setRawHeader( b'Authorization', value.encode('utf-8') )
         self.tokenOk = True
 
+    def getAlertsWFS(self, url, dbAlerts,fromDate, toDate,ids):
+        def run(task):
+            print('WFS mode')
+            print('url= '+url)
+            #uri = QgsDataSourceUri()
+            #uri.setConnection("34.86.182.142", "5432", "alerta", "stg_geoserver_usr", "hJ2zZn0uW4af")
+            #uri.setDataSource ("public", "temp_gis_published_alerts", 'geom')
+            #layer= QgsVectorLayer (uri.uri(False), "temp_gis_published_alerts", "postgres")
+            layer = QgsVectorLayer(url, 'qgis_published_alerts', 'WFS')
+            #QgsProject.instance().addMapLayer(layer)
+            for field in layer.fields():
+                print(field.name(), field.typeName())
+            #print('Here')
+            values = layer.getFeatures()
+            #print(values.next())
+            values = [ dbAlerts.transformItemWFS( v ,self) for v in values ]
+            self.alerts.emit( values )
+            layer.reload()
+            return { 'total': 1 }
+
+        def finished(exception, dataResult=None):
+            self.finishedAlert.emit()
+            self.taskAlerts = None
+            msg = f"Finished {dataResult['total']} alerts" if dataResult else ''
+            self.status.emit( msg )
+
+        task = QgsTask.fromFunction('Alert Task', run, on_finished=finished )
+        task.setDependentLayers( [ dbAlerts.layer ] )
+        self.taskAlerts = task
+        self.taskManager.addTask( task )
+
+    
+
+    def getAlertsWFSnonThread(self, url, dbAlerts,fromDate, toDate,ids):
+        print('WFS mode')
+        print('url= '+url)
+        #uri = QgsDataSourceUri()
+        #uri.setConnection("34.86.182.142", "5432", "alerta", "stg_geoserver_usr", "hJ2zZn0uW4af")
+        #uri.setDataSource ("public", "temp_gis_published_alerts", 'geom')
+        #layer= QgsVectorLayer (uri.uri(False), "temp_gis_published_alerts", "postgres")
+        layer = QgsVectorLayer(url, 'qgis_published_alerts', 'WFS')
+        layer.setCustomProperty("showFeatureCount", True)
+        #QgsProject.instance().addMapLayer(layer)
+        for field in layer.fields():
+            print(field.name(), field.typeName())
+        #print('Here')
+        values = layer.getFeatures()
+        #print(values.next())
+        values = [ dbAlerts.transformItemWFS( v ,self) for v in values ]
+        self.alerts.emit( values )
+        #layer.reload()
+        return { 'total': 1 }
+
+                #print(maxValue)
+        #p = {
+        #    'url': QUrl( url ),
+        #}
+        #self.access.requestUrl( p, self._addFeaturesLinkResponse, setFinished )
+
+    def _addFeaturesLinkResponse(self, response):
+        def getFeaturesResponse(data):
+            def getGeometry(geometry):
+                def getPolygonPoints(coordinates):
+                    polylines = []
+                    for line in coordinates:
+                        polyline = [ QgsPointXY( p[0], p[1] ) for p in line ]
+                        polylines.append( polyline )
+                    return polylines
+
+                if geometry['type'] == 'Polygon':
+                    polygon = getPolygonPoints( geometry['coordinates'] )
+                    return QgsGeometry.fromMultiPolygonXY( [ polygon ] )
+                elif geometry['type'] == 'MultiPolygon':
+                    polygons= []
+                    for polygon in geometry['coordinates']:
+                        polygons.append( getPolygonPoints( polygon ) )
+                    return QgsGeometry.fromMultiPolygonXY( polygons )
+
+                else:
+                    None
+
+            features = []
+            for feat in data['features']:
+                if self.access.isKill:
+                    return features
+                geom = getGeometry( feat['geometry'] )
+                del feat['geometry']
+                properties = feat['properties']
+                item = {}
+                for k in self.fields.keys():
+                    item[ k ] = properties[ k ]
+                if not item['cars'] is None:
+                    item['cars'] = item['cars'].replace(';', '\n')
+                else:
+                    item['cars'] = ''
+                item['geometry'] = geom
+                features.append( item )
+            return features
+
+    @staticmethod
+    def getUrlAlertsBySource(wktGeom,sourcename):
+        params = {
+            'service': 'WFS',
+            'version': '1.0.0',
+            'request': 'GetFeature',
+            'typeName': 'mapbiomas-alerta:qgis_published_alerts',
+            #'count':''+str(step),
+            #'startIndex':''+str(page)
+            #'outputFormat': 'application/json',
+            #'MAXFEATURES':'5000'
+            'cql_filter': "source ilike '%"+sourcename+"%'"
+        }
+        params = '&'.join( [ "{k}={v}".format( k=k, v=params[ k ] ) for k in params.keys() ] )
+        return "{url}?{params}".format( url=API_MapbiomasAlert.urlGeoserver, params=params )
+    
+
+    @staticmethod
+    def getUrlAlertsbyCQL(wktGeom,cql):
+        params = {
+            'service': 'WFS',
+            'version': '1.0.0',
+            'request': 'GetFeature',
+            'typeName': 'mapbiomas-alerta:qgis_published_alerts',
+            #'count':''+str(step),
+            #'startIndex':''+str(page)
+            #'outputFormat': 'application/json',
+            #'MAXFEATURES':'5000'
+            'cql_filter': cql
+        }
+        params = '&'.join( [ "{k}={v}".format( k=k, v=params[ k ] ) for k in params.keys() ] )
+        return "{url}?{params}".format( url=API_MapbiomasAlert.urlGeoserver, params=params )
+    
+    @staticmethod
+    def getUrlAlertsZero(wktGeom):
+        params = {
+            'service': 'WFS',
+            'version': '1.0.0',
+            'request': 'GetFeature',
+            'typename': 'mapbiomas-alerta:qgis_published_alerts',
+            #'count':''+str(step),
+            #'startIndex':''+str(page)
+            #'outputFormat': 'application/json',
+            #'MAXFEATURES':'5000'
+            'cql_filter': "id <= 20000"
+        }
+        params = '&'.join( [ "{k}={v}".format( k=k, v=params[ k ] ) for k in params.keys() ] )
+        return "{url}?{params}".format( url=API_MapbiomasAlert.urlGeoserver, params=params )
+    
+    @staticmethod
+    def getUrlAlertsPaginated(wktGeom,step,offset,after,before):
+        params = {
+            'service': 'WFS',
+            'version': '1.0.0',
+            'request': 'GetFeature',
+            'typeName': 'mapbiomas-alerta:mv_qgis_published_alerts_snap_to_grid',
+            'maxFeatures':''+str(step),
+            'startIndex':''+str((offset*step)),
+            'sortBy':'alert_code',
+            #'outputFormat': 'application/json',
+            #'MAXFEATURES':'10',
+            'srs':'EPSG:4674',
+            'srsName':'EPSG:4674',
+            'cql_filter': 'detected_at between '+str(after)+' and '+str(before)
+        }
+        params = '&'.join( [ "{k}={v}".format( k=k, v=params[ k ] ) for k in params.keys() ] )
+        return "{url}?{params}".format( url=API_MapbiomasAlert.urlGeoserver, params=params )
+
+    @staticmethod
+    def getUrlAlerts(wktGeom):
+        params = {
+            'service': 'WFS',
+            'version': '1.0.0',
+            'request': 'GetFeature',
+            'typeName': 'mapbiomas-alerta:mv_qgis_published_alerts_snap_to_grid',
+            #'count':''+str(step),
+            #'startIndex':''+str(page)
+            #'outputFormat': 'application/json',
+            #'MAXFEATURES':'10'
+            #'cql_filter': 'id >= 20000'
+        }
+        params = '&'.join( [ "{k}={v}".format( k=k, v=params[ k ] ) for k in params.keys() ] )
+        return "{url}?{params}".format( url=API_MapbiomasAlert.urlGeoserver, params=params )
+
+
     def getAlerts(self, dbAlerts, startDetectedAt, endDetectedAt, territoryIds):
         def run(task):
             def request(values):
+                maxValue = 0
                 data = self._replaceQuery( values, self.Q_ALLPUBLISHEDALERTS )
+                #print('Request DATA')
+                #print(data)
                 response = self._request( data )
                 if not response:
                     msg = f"MapBiomas Alert: {self.request.errorMessage()}"
@@ -194,20 +407,26 @@ class API_MapbiomasAlert(QObject):
                     msg = f"MapBiomas Alert: {','.join( l_messages )}"
                     self.message.emit( msg,  Qgis.Critical )
                     return -1
-                values = response['data']['allPublishedAlerts']
+                values = response['data']['publishedAlerts']
                 values = [ dbAlerts.transformItem( v ) for v in values ]
+                for v in values:
+                    if maxValue < int(v['alertCode']):
+                        maxValue = int(v['alertCode'])
+                #print(maxValue)
                 self.alerts.emit( values )
-                return len( values )
+                
+                return maxValue#len(values)
 
             def getFieldsName():
                 fields = list( dbAlerts.FIELDSDEF.keys() )
                 toField = fields.index('detectedAt') + 1
                 fields = fields[:toField]
-                return " ".join( fields ) + " cars { carCode } geometry { geom }"
+                return " ".join( fields ) + " cars { id carCode } geometry { geom }"
             
             fieldsName =  getFieldsName()
             s_territoryIds = ','.join( [ str(v) for v in territoryIds ] )
             offset = 0
+            previousLast = 0
             while True:
                 values = {
                     'startDetectedAt': startDetectedAt, 'endDetectedAt': endDetectedAt,
@@ -215,15 +434,23 @@ class API_MapbiomasAlert(QObject):
                     'limit': self.LIMIT, 'offset': offset,
                     'fields': fieldsName
                 }
-                total = request( values )
+                #print('Requesting OFFSET=')
+                #print(offset)
+
+                #print(values)
+                #self.message.emit(values, Qgis.Warning)
+                last = request( values )
+                #print('Last ID:')
+                #print(last)
                 if task.isCanceled():
                     self.message.emit('Canceled by user', Qgis.Warning)
                     return
-                if total == -1:
+                if last == -1:
                     return
-                if total < self.LIMIT:
+                if previousLast == last:
                     break
-                offset += total
+                offset = offset + self.LIMIT#total
+                previousLast = last
                 self.status.emit(f"Receiving {offset}...")
 
             return { 'total': offset + total }
@@ -261,10 +488,14 @@ class API_MapbiomasAlert(QObject):
             values = { 'alertId': alertId }
             data = self._replaceQuery( values, self.Q_IMAGES )
             response = self._request( data )
+            print('REQUEST [IMAGE data]:')
+            print(data)
             if not response:
                 self.message.emit( self.request.errorMessage(), Qgis.Critical )
                 return None
             data = response['data']['alertReport']['images']
+            print('IMAGE data:')
+            print(data)
             for k in ( 'before', 'after'):
                 data[ k ]['thumbnail'] = getThumbnail( data[k]['url'] )
             return data
@@ -353,6 +584,7 @@ class DbAlerts(QObject):
         'areaHa': 'double',
         'detectedAt': 'date', # Need be the last field for API_MapBiomasAlert.getAlerts.run.getFieldsName
         'carCode': 'string(-1)',
+        'carId': 'string(-1)',
     }
     CRS = QgsCoordinateReferenceSystem('EPSG:4674')
     def __init__(self, layer):
@@ -360,6 +592,41 @@ class DbAlerts(QObject):
         self.layer = layer
         self.project = QgsProject.instance()
         self.project.layerWillBeRemoved.connect( self.removeLayer )
+
+    @staticmethod
+    def transformItemWFS(item,context):
+        # Source
+        new_item = {}
+        #new_item.setFields(DbAlerts.fi)
+        #new_item.setGeometry(QgsGeometry.fromMultiPolygonXY(item.geometry))
+        #new_item.setGeometry(item.geometry)
+        new_item['alertCode'] = item['alert_code']
+        new_item['source'] = item['source'] 
+        new_item['areaHa'] = item['area_ha']
+        # Date
+        detectedAt = item['detected_at'].split('/')
+        detectedAt.reverse()
+        new_item['detectedAt'] = '-'.join( detectedAt )
+        cars = json.loads(item['cars'])
+        new_item['carCode'] = [ v['car_code'] for v in cars ]
+        new_item['carId'] = [ str(v['id']) for v in cars]
+        new_item['carId'] = ','.join( new_item['carId'] )
+        new_item['carCode'] = ','.join( new_item['carCode'] )
+        # carCode
+        #item['carCode'] = [ v['carCode'] for v in item['cars'] ]
+        #item['carId'] = [ str(v['id']) for v in item['cars']]
+        #item['carId'] = ','.join( item['carId'] )
+        #item['carCode'] = ','.join( item['carCode'] )
+        #del item['cars']
+        # Geometry
+        #geom, srid = Geometry_WKB.getQgsGeometry_SRID( item['geometry']['geom'] )
+        #del item['geometry']
+        #del item['alert_code']
+        new_item['geom'] =  item.geometry()
+        new_item['srid'] = '4674'
+        #context.setProgress(98)
+        #context.status.emit(f"Receiving...")
+        return new_item
 
     @staticmethod
     def transformItem(item):
@@ -371,6 +638,8 @@ class DbAlerts(QObject):
         item['detectedAt'] = '-'.join( detectedAt )
         # carCode
         item['carCode'] = [ v['carCode'] for v in item['cars'] ]
+        item['carId'] = [ str(v['id']) for v in item['cars']]
+        item['carId'] = ','.join( item['carId'] )
         item['carCode'] = ','.join( item['carCode'] )
         del item['cars']
         # Geometry
